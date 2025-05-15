@@ -1,123 +1,139 @@
+
+import logging
 import asyncio
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils import executor
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 
-steps = {
-    1: {'face': 90, 'back': 90, 'left': 60, 'right': 60, 'shade': 180},
-    2: {'face': 120, 'back': 120, 'left': 90, 'right': 90, 'shade': 240},
-    3: {'face': 150, 'back': 150, 'left': 120, 'right': 120, 'shade': 300},
-    4: {'face': 180, 'back': 180, 'left': 150, 'right': 150, 'shade': 360},
-    5: {'face': 210, 'back': 210, 'left': 180, 'right': 180, 'shade': 420},
-    6: {'face': 240, 'back': 240, 'left': 210, 'right': 210, 'shade': 480},
-    7: {'face': 270, 'back': 270, 'left': 240, 'right': 240, 'shade': 540},
-    8: {'face': 300, 'back': 300, 'left': 270, 'right': 270, 'shade': 600},
-    9: {'face': 330, 'back': 330, 'left': 300, 'right': 300, 'shade': 660},
-    10: {'face': 360, 'back': 360, 'left': 330, 'right': 330, 'shade': 720},
-    11: {'face': 390, 'back': 390, 'left': 360, 'right': 360, 'shade': 780},
-    12: {'face': 420, 'back': 420, 'left': 390, 'right': 390, 'shade': 840},
+API_TOKEN = "7856116405:AAFWDJM4yfMydjmnI7m-iYnTdEEbcnq9d9Y"
+CHANNEL_USERNAME = "@sunxstyle"
+
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot, storage=MemoryStorage())
+
+user_states = {}
+timing_table = {
+    1: [90, 90, 60, 60, 180],
+    2: [120, 120, 60, 60, 180],
+    3: [180, 180, 90, 90, 300],
+    4: [300, 300, 150, 150, 300],
+    5: [420, 420, 180, 180, 360],
+    6: [540, 540, 240, 240, 420],
+    7: [600, 600, 300, 300, 480],
+    8: [600, 600, 300, 300, 600],
+    9: [900, 900, 300, 300, 600],
+    10: [1200, 1200, 600, 600, 600],
+    11: [1500, 1500, 600, 600, 600],
+    12: [1800, 1800, 600, 600, 1200],
 }
 
-positions = ['face', 'back', 'left', 'right', 'shade']
-position_labels = {
-    'face': 'Лицом вверх',
-    'back': 'На животе',
-    'left': 'Левый бок',
-    'right': 'Правый бок',
-    'shade': 'В тени'
-}
-user_data = {}
+positions = ["Лицом вверх", "На животе", "Левый бок", "Правый бок", "В тени"]
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_data[chat_id] = {'step': None, 'paused': False, 'remaining': 0, 'current_position': None}
-    await context.bot.send_message(chat_id=chat_id, text="Привет, солнце! ☀️\nПодпишись на @sunxstyle и выбери шаг.")
-    await context.bot.send_message(chat_id=chat_id, text="Подписался(ась)?", reply_markup=ReplyKeyboardMarkup(
-        [[KeyboardButton("Да, я подписан(а)")]], resize_keyboard=True))
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    text = update.message.text
-    if chat_id not in user_data:
-        user_data[chat_id] = {'step': None, 'paused': False, 'remaining': 0, 'current_position': None}
-
-    if text == "Да, я подписан(а)":
-        buttons = [[str(i) for i in range(1, 5)], [str(i) for i in range(5, 9)], [str(i) for i in range(9, 13)]]
-        await context.bot.send_message(chat_id=chat_id, text="Выбери шаг:", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
-        return
-
-    if text == "Продолжить":
-        if user_data[chat_id]['step'] is not None and user_data[chat_id]['step'] < 12:
-            user_data[chat_id]['step'] += 1
-            await start_step(chat_id, context)
+def steps_keyboard():
+    markup = InlineKeyboardMarkup(row_width=3)
+    buttons = []
+    for step, times in timing_table.items():
+        total = sum(times)
+        minutes = total // 60
+        h, m = divmod(minutes, 60)
+        if h:
+            label = f"{step} ({h} ч {m} мин)" if m else f"{step} ({h} ч)"
         else:
-            await context.bot.send_message(chat_id=chat_id, text="Это был последний шаг.")
+            label = f"{step} ({m} мин)"
+        buttons.append(InlineKeyboardButton(label, callback_data=f"step_{step}"))
+    markup.add(*buttons)
+    return markup
+
+def check_subscribed(member):
+    return member.status in ("creator", "administrator", "member")
+
+@dp.message_handler(commands=["start"])
+async def send_welcome(message: types.Message):
+    user_id = message.from_user.id
+    member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+    if not check_subscribed(member):
+        kb = InlineKeyboardMarkup().add(InlineKeyboardButton("✅ Я подписан(а)", callback_data="check_sub"))
+        await message.answer("Чтобы пользоваться ботом, подпишись на наш канал: @sunxstyle", reply_markup=kb)
         return
+    user_states[user_id] = {"step": None, "position_index": 0}
+    await message.answer("Привет, солнце! ☀️", reply_markup=steps_keyboard())
 
-    if text == "Назад на 2 шага":
-        if user_data[chat_id]['step'] is not None:
-            user_data[chat_id]['step'] = max(1, user_data[chat_id]['step'] - 2)
-            await start_step(chat_id, context)
-        return
-
-    if text == "Выбрать шаг":
-        buttons = [[str(i) for i in range(1, 5)], [str(i) for i in range(5, 9)], [str(i) for i in range(9, 13)]]
-        await context.bot.send_message(chat_id=chat_id, text="Выбери шаг:", reply_markup=ReplyKeyboardMarkup(buttons, resize_keyboard=True))
-        return
-
-    if text.isdigit():
-        step = int(text)
-        if step in steps:
-            user_data[chat_id]['step'] = step
-            await context.bot.send_message(chat_id=chat_id, text=f"Начинаем шаг {step}!")
-            await start_step(chat_id, context)
-        else:
-            await context.bot.send_message(chat_id=chat_id, text="Шаг не найден. Введите от 1 до 12.")
-
-async def start_step(chat_id, context):
-    step = user_data[chat_id]['step']
-    durations = steps[step]
-
-    for key in positions:
-        label = position_labels[key]
-        duration = durations[key]
-        user_data[chat_id]['remaining'] = duration
-        user_data[chat_id]['paused'] = False
-        user_data[chat_id]['current_position'] = key
-        await context.bot.send_message(chat_id=chat_id, text=f"{label} — {duration // 60} мин")
-        await run_timer(chat_id, context, duration)
-
-    user_data[chat_id]['current_position'] = None
-    await context.bot.send_message(chat_id=chat_id, text="Шаг завершён! Что дальше?", reply_markup=ReplyKeyboardMarkup(
-        [["Продолжить"], ["Назад на 2 шага"], ["Выбрать шаг"]], resize_keyboard=True))
-
-async def run_timer(chat_id, context, duration):
-    while duration > 0:
-        if user_data[chat_id]['paused']:
-            user_data[chat_id]['remaining'] = duration
-            return
-        await asyncio.sleep(1)
-        duration -= 1
-    user_data[chat_id]['remaining'] = 0
-
-async def pause(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user_data[chat_id]['paused'] = True
-    await context.bot.send_message(chat_id=chat_id, text="⏸️ Пауза.")
-
-async def resume(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if user_data[chat_id].get('remaining', 0) > 0 and user_data[chat_id].get('current_position'):
-        label = position_labels[user_data[chat_id]['current_position']]
-        await context.bot.send_message(chat_id=chat_id, text=f"▶️ Возобновляем: {label} — осталось {user_data[chat_id]['remaining'] // 60} мин")
-        user_data[chat_id]['paused'] = False
-        await run_timer(chat_id, context, user_data[chat_id]['remaining'])
+@dp.callback_query_handler(lambda c: c.data == "check_sub")
+async def process_check_sub(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+    if check_subscribed(member):
+        await callback_query.message.answer("Спасибо за подписку!", reply_markup=steps_keyboard())
     else:
-        await context.bot.send_message(chat_id=chat_id, text="⏯ Шаг неактивен. Выбери, как продолжить:", reply_markup=ReplyKeyboardMarkup(
-            [["Продолжить"], ["Назад на 2 шага"], ["Выбрать шаг"]], resize_keyboard=True))
+        await callback_query.answer("Подпишись, чтобы пользоваться ботом!", show_alert=True)
 
-app = import os\napp = ApplicationBuilder().token(os.getenv("BOT_TOKEN")).build()
-app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("pause", pause))
-app.add_handler(CommandHandler("resume", resume))
-app.add_handler(MessageHandler(filters.TEXT, handle_message))
-app.run_polling()
+@dp.callback_query_handler(lambda c: c.data.startswith("step_"))
+async def process_step(callback_query: types.CallbackQuery):
+    step = int(callback_query.data.split("_")[1])
+    user_id = callback_query.from_user.id
+    user_states[user_id] = {"step": step, "position_index": 0}
+    await start_position(callback_query.message, user_id)
+
+async def start_position(message, user_id):
+    state = user_states[user_id]
+    step = state["step"]
+    pos_idx = state["position_index"]
+    if pos_idx >= len(positions):
+        await message.answer("Шаг завершён!", reply_markup=end_step_keyboard())
+        return
+    duration = timing_table[step][pos_idx]
+    pos = positions[pos_idx]
+    await message.answer(f"{pos} — {duration // 60} мин", reply_markup=step_controls())
+    state["task"] = asyncio.create_task(position_timer(message, user_id, step, duration))
+
+async def position_timer(message, user_id, step, duration):
+    await asyncio.sleep(duration)
+    if user_id in user_states and user_states[user_id].get("step") == step:
+        user_states[user_id]["position_index"] += 1
+        await start_position(message, user_id)
+
+def step_controls():
+    return InlineKeyboardMarkup(row_width=1).add(
+        InlineKeyboardButton("⏭️ Пропустить", callback_data="skip"),
+        InlineKeyboardButton("📋 Вернуться к шагам", callback_data="back_to_steps"),
+        InlineKeyboardButton("↩️ Назад на 2 шага (если был перерыв)", callback_data="back_two_steps"),
+        InlineKeyboardButton("⛔ Завершить", callback_data="end_session")
+    )
+
+def end_step_keyboard():
+    return InlineKeyboardMarkup(row_width=1).add(
+        InlineKeyboardButton("▶️ Продолжить", callback_data="continue"),
+        InlineKeyboardButton("📋 Вернуться к шагам", callback_data="back_to_steps"),
+        InlineKeyboardButton("↩️ Назад на 2 шага (если был перерыв)", callback_data="back_two_steps"),
+        InlineKeyboardButton("⛔ Завершить", callback_data="end_session")
+    )
+
+@dp.callback_query_handler(lambda c: c.data in ["skip", "back_to_steps", "back_two_steps", "end_session", "continue"])
+async def handle_controls(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    data = callback_query.data
+    state = user_states.get(user_id)
+    if state and "task" in state:
+        state["task"].cancel()
+    if data == "skip":
+        state["position_index"] += 1
+        await start_position(callback_query.message, user_id)
+    elif data == "back_to_steps":
+        await callback_query.message.answer("Выбери шаг:", reply_markup=steps_keyboard())
+    elif data == "back_two_steps":
+        new_step = max(1, state["step"] - 2)
+        user_states[user_id] = {"step": new_step, "position_index": 0}
+        await start_position(callback_query.message, user_id)
+    elif data == "end_session":
+        await callback_query.message.answer("Сеанс завершён. Можешь вернуться позже и начать заново ☀️",
+            reply_markup=InlineKeyboardMarkup(row_width=1).add(
+                InlineKeyboardButton("📋 Вернуться к шагам", callback_data="back_to_steps"),
+                InlineKeyboardButton("↩️ Назад на 2 шага (если был перерыв)", callback_data="back_two_steps")
+            ))
+    elif data == "continue":
+        await start_position(callback_query.message, user_id)
+
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
